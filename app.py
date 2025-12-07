@@ -93,7 +93,7 @@ def get_naver_blog_content(url):
         return "에러", f"시스템 에러: {e}"
 
 # ==========================================
-# 3. RSS 파싱 함수 (필터링 + HTML 태그 제거)
+# 3. RSS 파싱 함수 (강력한 헤더 추가)
 # ==========================================
 def clean_html(raw_html):
     """CDATA 태그나 HTML 태그 제거용 헬퍼 함수"""
@@ -113,9 +113,13 @@ def get_latest_mofa_news():
     """
     rss_url = "https://rss.blog.naver.com/mofakr.xml"
     
+    # [수정] RSS 요청에도 강력한 헤더 적용 (네이버 차단 회피)
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/xml,application/xhtml+xml,text/html;q=0.9, text/plain;q=0.8,image/png,*/*;q=0.5'
+    }
+    
     try:
-        # RSS 요청에도 헤더 추가
-        headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(rss_url, headers=headers)
         
         # 파싱
@@ -132,7 +136,7 @@ def get_latest_mofa_news():
             title = item.title.text if item.title else ""
             link = item.link.text if item.link else ""
             
-            # [수정] CDATA 및 공백 정리
+            # CDATA 및 공백 정리
             title = clean_html(title)
             link = link.strip()
             
@@ -145,7 +149,7 @@ def get_latest_mofa_news():
                 if len(target_links) >= 5: 
                     break
         
-        # 비상용: 타겟 글 없으면 최신 3개
+        # 비상용: 타겟 글 없으면 최신 3개 무조건 가져오기
         if not target_links and items:
             for i in items[:3]:
                 t = clean_html(i.title.text)
@@ -156,7 +160,8 @@ def get_latest_mofa_news():
         return target_links
 
     except Exception as e:
-        st.error(f"RSS 파싱 실패: {e}")
+        # RSS 연결 실패 시 에러 로그는 콘솔에만 찍고 빈 리스트 반환
+        print(f"RSS 파싱 에러: {e}")
         return []
 
 # ==========================================
