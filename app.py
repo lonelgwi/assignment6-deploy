@@ -5,14 +5,16 @@ import requests
 from bs4 import BeautifulSoup
 import re
 
-# 1. 페이지 기본 설정
+# ==========================================
+# 1. 페이지 및 모델 설정
+# ==========================================
 st.set_page_config(page_title="외교부 소식 요약 봇", page_icon="🤖")
 
-# 2. 모델 불러오기 (파일 없어도 됨! 인터넷에서 받아옴)
 @st.cache_resource
 def load_model():
     try:
-        # 깃허브 용량 문제 해결을 위해 공개된 'KoBART 요약 모델'을 사용합니다.
+        # 깃허브 용량 제한 없이 실행되도록 공개된 KoBART 모델 사용
+        # (제공해주신 코드의 로직을 그대로 사용하되, 모델 파일만 온라인에서 가져옵니다)
         model_name = "gogamza/kobart-summarization" 
         tokenizer = PreTrainedTokenizerFast.from_pretrained(model_name)
         model = BartForConditionalGeneration.from_pretrained(model_name)
@@ -23,93 +25,132 @@ def load_model():
 
 tokenizer, model = load_model()
 
-# 3. 텍스트 요약 함수
-def summarize_text(text):
-    if not text or len(text) < 50:
-        return "요약할 내용이 너무 짧습니다."
-    
-    # 모델이 읽기 좋게 입력 데이터로 변환
-    input_ids = tokenizer.encode(text, return_tensors="pt")
-
-    # 모델이 요약문 생성 (옵션 조절로 품질 향상)
-    summary_text_ids = model.generate(
-        input_ids=input_ids,
-        bos_token_id=model.config.bos_token_id,
-        eos_token_id=model.config.eos_token_id,
-        length_penalty=2.0,
-        max_length=128,
-        min_length=32,
-        num_beams=4,
-    )
-    
-    return tokenizer.decode(summary_text_ids[0], skip_special_tokens=True)
-
-# 4. 네이버 블로그 본문 크롤링 함수 (Iframe 해결)
+# ==========================================
+# 2. 크롤링 함수 (제공해주신 로직 적용)
+# ==========================================
 def get_naver_blog_content(url):
+    """
+    네이버 블로그 URL -> 제목, 본문 추출 (Iframe 구조 대응)
+    """
+    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        
-        # 모바일 주소 대응
+        # 모바일 주소 변환
         if "m.blog.naver.com" in url:
             url = url.replace("m.blog.naver.com", "blog.naver.com")
 
         response = requests.get(url, headers=headers)
         soup = BeautifulSoup(response.text, 'html.parser')
 
-        # 네이버 블로그는 iframe 안에 진짜 내용이 숨어있음
-        iframe = soup.select_one("iframe#mainFrame")
+        # Iframe 대응
+        iframe = soup.select_one('iframe#mainFrame')
         if iframe:
-            real_url = "https://blog.naver.com" + iframe["src"]
+            real_url = "https://blog.naver.com" + iframe['src']
             response = requests.get(real_url, headers=headers)
             soup = BeautifulSoup(response.text, 'html.parser')
 
-        # 본문 추출 (제목과 본문)
+        # 제목 추출 (.se-title-text 또는 .htitle)
         title_elem = soup.select_one('.se-title-text') or soup.select_one('.htitle')
         title = title_elem.text.strip() if title_elem else "제목 없음"
 
+        # 본문 추출 (.se-main-container 또는 #postViewArea)
         content_elem = soup.select_one('.se-main-container') or soup.select_one('#postViewArea')
-        
+
         if content_elem:
             text = content_elem.text
-            text = re.sub(r'\n+', ' ', text) # 줄바꿈 정리
-            return title, text.strip()[:2000] # 너무 길면 자름
+            # 불필요한 줄바꿈 및 공백 정리
+            text = re.sub(r'\n+', ' ', text)
+            text = re.sub(r'\s+', ' ', text)
+            return title, text.strip()
         else:
             return title, None
 
     except Exception as e:
-        return "에러", f"크롤링 실패: {e}"
+        return "에러", f"크롤링 에러: {e}"
 
-# 5. [업그레이드] 외교부 RSS에서 최신 글 5개 가져오기
+# ==========================================
+# 3. RSS 파싱 함수 (카테고리 필터링 추가)
+# ==========================================
 def get_latest_mofa_news():
+    """
+    외교부 블로그 RSS를 뒤져서 '소식/보도/대변인' 관련 글만 가져옴
+    """
     rss_url = "https://rss.blog.naver.com/mofakr.xml"
+    
     try:
         response = requests.get(rss_url)
-        # 'xml' 파서 대신 'html.parser'를 사용하여 별도의 lxml 설치 없이도 동작하게 수정
-        soup = BeautifulSoup(response.content, 'html.parser')
+        # lxml이 설치되어 있지 않을 경우를 대비해 xml 파싱 시도
+        try:
+            soup = BeautifulSoup(response.content, 'xml')
+        except:
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
         items = soup.find_all('item')
         
-        news_list = []
-        count = 0
+        target_links = []
         
         for item in items:
-            # 제목과 링크 추출
+            # 카테고리 태그 확인
+            category = item.category.text if item.category else ""
             title = item.title.text
             link = item.link.text
             
-            # 5개까지만 담기
-            news_list.append({"title": title, "link": link})
-            count += 1
-            if count >= 5:
-                break
+            # [필터링 로직] 사용자가 원한 '외교부 소식' 관련 키워드
+            if "소식" in category or "보도" in category or "대변인" in category or "외교부" in category:
+                target_links.append({"title": title, "link": link})
                 
-        return news_list
+                # 최신 5개만 수집하면 중단
+                if len(target_links) >= 5: 
+                    break
+        
+        # 만약 타겟 카테고리 글이 하나도 없으면 최신글 3개라도 가져오기 (비상용)
+        if not target_links and items:
+            target_links = [{"title": i.title.text, "link": i.link.text} for i in items[:3]]
+            
+        return target_links
+
     except Exception as e:
+        st.error(f"RSS 파싱 실패: {e}")
         return []
 
-# --- 메인 화면 구성 (UI) ---
+# ==========================================
+# 4. 요약 함수 (후처리 로직 적용)
+# ==========================================
+def predict_summary(text):
+    if not text or len(text) < 50:
+        return "요약할 내용이 너무 짧거나 본문을 가져오지 못했습니다."
+
+    # 입력 길이 제한 (Truncation)
+    input_ids = tokenizer.encode(text, return_tensors="pt", max_length=1024, truncation=True)
+
+    # 모델 생성 옵션 (제공해주신 파라미터 적용)
+    summary_text_ids = model.generate(
+        input_ids=input_ids,
+        bos_token_id=model.config.bos_token_id,
+        eos_token_id=model.config.eos_token_id,
+        length_penalty=1.2,   # 자연스러운 길이 유도
+        max_length=256,       # 길이 확장
+        min_length=30,
+        num_beams=4,
+        early_stopping=True,
+        no_repeat_ngram_size=3
+    )
+    
+    summary = tokenizer.decode(summary_text_ids[0], skip_special_tokens=True)
+
+    # [후처리] 문장 끊김 방지
+    if summary and summary[-1] not in ['.', '!', '?']:
+        last_punctuation = max(summary.rfind('.'), summary.rfind('!'), summary.rfind('?'))
+        if last_punctuation != -1:
+            summary = summary[:last_punctuation+1]
+
+    return summary
+
+# ==========================================
+# 5. 메인 UI 화면 구성
+# ==========================================
 
 st.title("📰 외교부 소식 자동 요약 봇")
-st.write("인공지능이 외교부의 긴 소식을 3줄로 핵심만 요약해 드립니다.")
+st.write("인공지능이 외교부 블로그의 주요 소식을 3줄로 요약해 드립니다.")
 
 if model is None:
     st.error("⚠️ 모델을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.")
@@ -126,42 +167,44 @@ with tab1:
     
     if st.button("요약 시작", key="btn1"):
         if input_url:
-            with st.spinner('내용을 가져와서 요약 중입니다...'):
+            with st.spinner('크롤링 및 요약 중입니다...'):
                 title, raw_text = get_naver_blog_content(input_url)
                 
                 if raw_text:
-                    summary = summarize_text(raw_text)
+                    summary = predict_summary(raw_text)
                     st.markdown(f"### 📄 {title}")
-                    st.info(summary) # 요약 결과 출력
+                    st.info(summary)
                     with st.expander("원본 내용 보기"):
                         st.write(raw_text)
                 else:
-                    st.error("본문을 가져오지 못했습니다. 접근 권한이 없거나 삭제된 글일 수 있습니다.")
+                    st.error("본문을 가져오지 못했습니다. (접근 권한 혹은 삭제된 글)")
 
-# [Tab 2] 외교부 최신 소식 (요청하신 기능!)
+# [Tab 2] 외교부 최신 소식 (자동 수집)
 with tab2:
-    st.subheader("외교부 최신 소식 (Top 5)")
-    st.write("버튼을 누르면 외교부 블로그의 최신 글 5개를 가져와서 자동으로 요약합니다.")
+    st.subheader("외교부 주요 소식 (Top 5)")
+    st.write("아래 버튼을 누르면 '외교부 소식/보도' 카테고리의 최신 글을 가져옵니다.")
     
     if st.button("최신 소식 가져오기", key="btn2"):
-        with st.spinner('외교부 블로그를 방문해서 최신 글을 읽고 있습니다... (약 10~20초 소요)'):
-            # 1. RSS에서 최신 글 리스트 가져오기
+        with st.spinner('외교부 블로그를 스캔하는 중입니다...'):
+            # 1. RSS 리스트 확보
             news_items = get_latest_mofa_news()
             
             if not news_items:
-                st.error("외교부 소식을 가져오는데 실패했습니다.")
-            
-            # 2. 각 글마다 크롤링 + 요약 실행
-            for i, item in enumerate(news_items):
-                st.markdown(f"---") # 구분선
-                st.markdown(f"### {i+1}. {item['title']}") # 제목 출력
+                st.warning("가져올 소식이 없거나 연결에 실패했습니다.")
+            else:
+                st.success(f"총 {len(news_items)}개의 최신 소식을 발견했습니다!")
                 
-                # 본문 긁어오기
-                _, content = get_naver_blog_content(item['link'])
-                
-                if content:
-                    # 요약하기
-                    summary = summarize_text(content)
-                    st.success(summary) # 요약 결과 (초록색 박스)
-                else:
-                    st.warning("본문을 읽을 수 없는 게시글입니다.")
+                # 2. 각 게시글 순회하며 크롤링 & 요약
+                for i, item in enumerate(news_items):
+                    st.markdown("---")
+                    st.markdown(f"**[{i+1}] {item['title']}**")
+                    
+                    # 상세 내용 크롤링
+                    _, content = get_naver_blog_content(item['link'])
+                    
+                    if content:
+                        # 요약 실행
+                        summary = predict_summary(content)
+                        st.success(summary)
+                    else:
+                        st.caption("본문 내용을 불러올 수 없습니다.")
