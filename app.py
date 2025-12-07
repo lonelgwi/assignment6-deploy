@@ -21,9 +21,9 @@ st.set_page_config(page_title="외교부 소식 요약 봇", page_icon="🤖")
 @st.cache_resource
 def load_model():
     try:
-        model_path = "./final_model"  # 폴더 이름
-        tokenizer = PreTrainedTokenizerFast.from_pretrained(model_path)
-        model = BartForConditionalGeneration.from_pretrained(model_path)
+        model_name = "gogamza/kobart-summarization"
+        tokenizer = PreTrainedTokenizerFast.from_pretrained(model_name)
+        model = BartForConditionalGeneration.from_pretrained(model_name)
         return tokenizer, model
     except Exception as e:
         st.error(f"모델을 불러오는 중 오류가 발생했습니다. 폴더 위치를 확인해주세요! 에러 내용: {e}")
