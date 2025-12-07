@@ -1,0 +1,6 @@
+streamlit
+transformers
+torch
+requests
+beautifulsoup4
+sentencepiece
