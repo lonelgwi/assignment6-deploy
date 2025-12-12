@@ -1,213 +1,132 @@
 import streamlit as st
 import torch
-from transformers import PreTrainedTokenizerFast, BartForConditionalGeneration
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import requests
 from bs4 import BeautifulSoup
 import re
-import trafilatura
 
-# ==========================================
-# 1. 페이지 및 모델 설정
-# ==========================================
-st.set_page_config(page_title="외교부 소식 요약 봇", page_icon="🤖")
+# --- 1. 페이지 기본 설정 ---
+st.set_page_config(page_title="외교부 소식 요약 서비스", page_icon="🤖")
 
+st.title("🤖 인공지능 뉴스 요약 봇")
+st.write("Assignment 6: ML 모델 서비스화 프로젝트")
+st.markdown("---")
+
+# --- 2. 모델 불러오기 (캐싱 기능으로 속도 향상) ---
 @st.cache_resource
 def load_model():
-    try:
-        model_name = "gogamza/kobart-summarization" 
-        tokenizer = PreTrainedTokenizerFast.from_pretrained(model_name)
-        model = BartForConditionalGeneration.from_pretrained(model_name)
-        return tokenizer, model
-    except Exception as e:
-        st.error(f"모델 로딩 실패: {e}")
-        return None, None
-
-tokenizer, model = load_model()
-
-# ==========================================
-# 2. 크롤링 함수 (Trafilatura + 타임아웃 강화)
-# ==========================================
-def get_naver_blog_content(url):
-    """
-    네이버 블로그 본문 추출 시도.
-    실패 확률이 높으므로 짧은 타임아웃을 둡니다.
-    """
-    if not url: return "에러", None
-
-    try:
-        # 모바일 주소로 변환 (성공률이 조금 더 높음)
-        if "m.blog.naver.com" in url:
-            target_url = url.replace("m.blog.naver.com", "blog.naver.com")
-        else:
-            target_url = url
-
-        # 1차 시도: Trafilatura
-        downloaded = trafilatura.fetch_url(target_url)
-        
-        # 2차 시도: PostView 주소 직접 조립
-        if downloaded is None:
-            match = re.search(r'blog\.naver\.com/([a-zA-Z0-9_]+)/([0-9]+)', target_url)
-            if match:
-                final_url = f"https://blog.naver.com/PostView.naver?blogId={match.group(1)}&logNo={match.group(2)}"
-                downloaded = trafilatura.fetch_url(final_url)
-
-        if downloaded is None:
-            return "차단됨", None
-
-        # 텍스트 추출
-        result_text = trafilatura.extract(downloaded, include_comments=False, include_tables=False, include_links=False)
-        
-        # 제목 추출
-        soup = BeautifulSoup(downloaded, 'html.parser')
-        og_title = soup.select_one('meta[property="og:title"]')
-        title = og_title['content'] if og_title else "제목 없음"
-
-        if result_text:
-            text = re.sub(r'\n+', ' ', result_text)
-            return title, text.strip()
-        else:
-            return title, None
-
-    except Exception:
-        return "에러", None
-
-# ==========================================
-# 3. RSS 파싱 함수 (핵심: Description까지 확보)
-# ==========================================
-def clean_text(raw_html):
-    """HTML 태그와 특수문자를 제거하여 순수 텍스트만 남김"""
-    if not raw_html: return ""
-    clean = re.sub(r'<!\[CDATA\[(.*?)\]\]>', r'\1', raw_html) # CDATA 제거
-    clean = re.sub(r'<.*?>', '', clean) # HTML 태그 제거
-    clean = re.sub(r'&[a-z]+;', ' ', clean) # 특수문자 제거
-    return clean.strip()
-
-def get_latest_mofa_news():
-    rss_url = "https://rss.blog.naver.com/mofakr.xml"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
+    # 로컬 폴더 경로 (폴더 이름이 정확해야 합니다)
+    model_path = "./final_model" 
     
     try:
-        response = requests.get(rss_url, headers=headers, timeout=5)
-        soup = BeautifulSoup(response.content, 'html.parser') # xml 파서 대신 html.parser 사용 (호환성)
-        
-        items = soup.find_all('item')
-        target_list = []
-        
-        for item in items:
-            category = item.category.text if item.category else ""
-            title = clean_text(item.title.text if item.title else "")
-            link = item.link.text.strip() if item.link else ""
-            
-            # [비상용] RSS에 포함된 본문 요약본(Description) 가져오기
-            description = clean_text(item.description.text if item.description else "")
-
-            if not link: continue
-
-            # 필터링
-            if "소식" in category or "보도" in category or "대변인" in category or "외교부" in category:
-                target_list.append({
-                    "title": title, 
-                    "link": link,
-                    "desc": description  # 비상용 본문 저장
-                })
-                if len(target_list) >= 5: break
-        
-        # 필터링 결과가 없으면 최신 3개라도 가져옴 (비상용)
-        if not target_list and items:
-             for i in items[:3]:
-                t = clean_text(i.title.text)
-                l = i.link.text.strip()
-                d = clean_text(i.description.text if i.description else "")
-                target_list.append({"title": t, "link": l, "desc": d})
-
-        return target_list
-
+        # 모델과 토크나이저 로드
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_path)
+        return tokenizer, model
     except Exception as e:
-        print(f"RSS 에러: {e}")
-        return []
+        return None, None
 
-# ==========================================
-# 4. 요약 함수
-# ==========================================
-def predict_summary(text):
-    if not text or len(text) < 20: # 기준 완화
-        return "요약할 내용이 부족합니다."
+# 모델 로딩 상태 표시
+with st.spinner('AI 모델을 깨우는 중입니다... (잠시만 기다려주세요)'):
+    tokenizer, model = load_model()
 
-    # 입력 데이터 변환
-    input_ids = tokenizer.encode(text, return_tensors="pt", max_length=1024, truncation=True)
+if model is None:
+    st.error("⚠️ 'final_model' 폴더를 찾을 수 없습니다! 폴더 위치를 확인해주세요.")
+    st.stop()
+else:
+    st.success("✅ AI 모델 준비 완료!")
 
-    # 요약문 생성
-    summary_text_ids = model.generate(
-        input_ids=input_ids,
-        bos_token_id=model.config.bos_token_id,
-        eos_token_id=model.config.eos_token_id,
-        length_penalty=1.0, # 패널티 완화
-        max_length=128,
-        min_length=20,      # 최소 길이 완화
-        num_beams=4,
+# --- 3. 요약 함수 정의 ---
+def summarize_text(text):
+    inputs = tokenizer(
+        text, 
+        return_tensors="pt", 
+        max_length=1024, 
+        truncation=True, 
+        padding="max_length"
+    )
+    
+    summary_ids = model.generate(
+        inputs["input_ids"], 
+        max_length=150, 
+        min_length=30, 
+        length_penalty=2.0, 
+        num_beams=4, 
         early_stopping=True
     )
     
-    summary = tokenizer.decode(summary_text_ids[0], skip_special_tokens=True)
+    summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
     return summary
 
-# ==========================================
-# 5. 메인 UI
-# ==========================================
-st.title("📰 외교부 소식 자동 요약 봇")
-st.write("인공지능이 외교부 블로그의 주요 소식을 3줄로 요약해 드립니다.")
-
-if model is None:
-    st.error("⚠️ 모델 로딩 실패.")
-else:
-    st.success("AI 모델 준비 완료! (Ready)")
-
-tab1, tab2 = st.tabs(["🔗 URL 직접 입력", "📢 외교부 최신 소식 (자동)"])
-
-with tab1:
-    st.subheader("뉴스/블로그 주소 입력")
-    input_url = st.text_input("URL 입력:")
-    if st.button("요약 시작", key="btn1"):
-        if input_url:
-            with st.spinner('분석 중...'):
-                title, raw_text = get_naver_blog_content(input_url)
-                if raw_text:
-                    st.markdown(f"### 📄 {title}")
-                    st.info(predict_summary(raw_text))
-                    with st.expander("원본 보기"): st.write(raw_text)
-                else:
-                    st.error("본문 접근이 차단되었습니다.")
-
-with tab2:
-    st.subheader("외교부 주요 소식 (Top 5)")
-    st.write("본문 접속이 차단될 경우, 네이버가 제공한 미리보기 내용을 대신 요약합니다.")
-    
-    if st.button("최신 소식 가져오기", key="btn2"):
-        with st.spinner('소식 가져오는 중...'):
-            news_items = get_latest_mofa_news()
+# --- 4. 스크레이핑 함수 (차단 방지 적용) ---
+def scrape_website(url):
+    try:
+        # 로봇이 아닌 척 브라우저 정보(User-Agent) 보내기
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.get(url, headers=headers)
+        response.raise_for_status() # 404 등 에러 체크
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # 본문 추출 시도 (p 태그 위주)
+        paragraphs = soup.find_all('p')
+        content = " ".join([p.get_text() for p in paragraphs])
+        
+        if len(content) < 50: # 내용이 너무 짧으면 실패로 간주
+            return "내용을 찾을 수 없습니다. (보안이 강한 사이트일 수 있습니다)"
             
-            if not news_items:
-                st.warning("RSS 연결 실패.")
-            else:
-                st.success(f"총 {len(news_items)}개의 소식 확인")
+        return content
+    except Exception as e:
+        return f"에러 발생: {e}"
+
+# --- 5. 화면 구성 (탭 기능) ---
+tab1, tab2 = st.tabs(["🌐 URL로 요약하기", "📝 직접 입력해서 요약하기"])
+
+# [Tab 1] URL 스크레이핑 방식
+with tab1:
+    st.subheader("뉴스 기사 주소를 입력하세요")
+    url_input = st.text_input("URL 입력", placeholder="https://www.mofa.go.kr/...")
+    
+    if st.button("URL 요약 시작", key='btn_url'):
+        if url_input:
+            with st.spinner('사이트에 접속해서 글을 읽는 중...'):
+                scraped_text = scrape_website(url_input)
                 
-                for i, item in enumerate(news_items):
-                    st.markdown("---")
-                    st.markdown(f"**[{i+1}] {item['title']}**")
-                    
-                    # 1. 크롤링 시도
-                    _, content = get_naver_blog_content(item['link'])
-                    
-                    if content:
-                        # 성공 시 본문 요약
-                        st.success(predict_summary(content))
-                    elif item['desc']:
-                        # [비상용] 실패 시 RSS Description 요약
-                        st.warning("🔒 본문 접속 차단됨 → 미리보기 내용으로 대체 요약합니다.")
-                        st.info(predict_summary(item['desc']))
-                    else:
-                        st.error("요약할 내용을 찾을 수 없습니다.")
-                    
-                    st.caption(f"[원문 보러가기]({item['link']})")
+            if "에러 발생" in scraped_text or len(scraped_text) < 50:
+                st.warning("⚠️ 이 사이트는 보안 때문에 봇 접근을 막고 있습니다. 옆의 '직접 입력' 탭을 이용해주세요!")
+                st.write(f"상세 메시지: {scraped_text}")
+            else:
+                st.info(f"수집된 글자 수: {len(scraped_text)}자")
+                with st.expander("원문 보기 (접기/펼치기)"):
+                    st.write(scraped_text[:1000] + "...") # 너무 기니까 앞부분만
+                
+                # 요약 수행
+                with st.spinner('AI가 요약 중입니다...'):
+                    result = summarize_text(scraped_text)
+                    st.markdown("### 📄 요약 결과")
+                    st.success(result)
+        else:
+            st.warning("주소를 입력해주세요.")
+
+# [Tab 2] 텍스트 직접 입력 방식 (플랜 B)
+with tab2:
+    st.subheader("본문 내용을 직접 붙여넣으세요")
+    st.caption("※ 스크레이핑이 안 되는 사이트는 여기서 해결하세요!")
+    text_input = st.text_area("기사 본문 붙여넣기", height=300)
+    
+    if st.button("텍스트 요약 시작", key='btn_text'):
+        if len(text_input) > 50:
+            with st.spinner('AI가 열심히 요약 중...'):
+                result = summarize_text(text_input)
+                st.markdown("### 📄 요약 결과")
+                st.success(result)
+        else:
+            st.warning("내용이 너무 짧습니다. 50자 이상 입력해주세요.")
+
+# --- 6. 사이드바 (정보 표시) ---
+with st.sidebar:
+    st.header("프로젝트 정보")
+    st.write("**작성자:** 홍길동 (본인이름)")
+    st.write("**사용 모델:** T5 / Bart (학습시킨 모델명)")
+    st.write("**버전:** 1.0.0")
+    st.info("이 서비스는 Assignment 6 과제 제출용입니다.")
