@@ -5,48 +5,48 @@ import re
 from bs4 import BeautifulSoup
 from transformers import PreTrainedTokenizerFast, BartForConditionalGeneration
 
-# --- 1. 페이지 기본 설정 ---
+# --- 1. 페이지 설정 ---
 st.set_page_config(page_title="외교부 소식 요약 서비스", page_icon="📢", layout="wide")
 
-st.title("📢 Daily 외교부 소식 자동 요약기")
-st.markdown("Assignment 6: 네이버 블로그 크롤링 및 요약 서비스")
+st.title("📢 외교부 소식 자동 3줄 요약기")
+st.markdown("Assignment 6: 네이버 블로그 크롤링 및 KoBART 요약 서비스")
 st.markdown("---")
 
-# --- 2. 모델 불러오기 ---
-# 주의: 구글 드라이브 경로는 로컬에서 작동하지 않으므로, 
-# 안정적인 실행을 위해 성능이 검증된 온라인 모델(KoBART)을 사용하도록 연결했습니다.
+# --- 2. 모델 불러오기 (에러 추적 기능 포함) ---
 @st.cache_resource
 def load_model():
     model_name = "ainize/kobart-news"
     try:
+        # 모델과 토크나이저 다운로드
         tokenizer = PreTrainedTokenizerFast.from_pretrained(model_name)
         model = BartForConditionalGeneration.from_pretrained(model_name)
-        return tokenizer, model
+        return tokenizer, model, None # 성공 시 에러 메시지 없음
     except Exception as e:
-        return None, None
+        return None, None, str(e) # 실패 시 에러 메시지 반환
 
-with st.spinner('AI 모델을 로딩 중입니다...'):
-    tokenizer, model = load_model()
+with st.spinner('AI 모델(KoBART)을 깨우는 중입니다... (최초 1회 다운로드)'):
+    tokenizer, model, error_msg = load_model()
 
+# 모델 로딩 실패 시 상세 이유 출력
 if model is None:
-    st.error("⚠️ 모델 로드 실패! 인터넷 연결을 확인해주세요.")
-    st.stop()
+    st.error("⚠️ 치명적 오류: 모델을 불러오지 못했습니다.")
+    st.error(f"🔍 에러 상세: {error_msg}")
+    st.warning("💡 팁: 'ImportError'나 'protobuf' 관련 에러라면 터미널에 `pip install protobuf sentencepiece`를 입력하세요.")
+    st.stop() # 여기서 코드 실행 중단
 
-# --- 3. 크롤링 함수 (제공해주신 코드 이식) ---
+# --- 3. 크롤링 함수 (RSS & Iframe 대응) ---
 def get_naver_blog_content(url):
-    """
-    네이버 블로그 URL -> 제목, 본문 추출 (Iframe 구조 대응)
-    """
+    """네이버 블로그의 Iframe을 뚫고 실제 본문을 가져옵니다."""
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        # 모바일 링크 변환
+        # 모바일 링크 복구
         if "m.blog.naver.com" in url:
             url = url.replace("m.blog.naver.com", "blog.naver.com")
 
         response = requests.get(url, headers=headers)
         soup = BeautifulSoup(response.text, 'html.parser')
 
-        # Iframe 주소 찾기 (네이버 블로그 구조상 필수)
+        # Iframe src 찾기
         iframe = soup.select_one('iframe#mainFrame')
         if iframe:
             real_url = "https://blog.naver.com" + iframe['src']
@@ -62,20 +62,18 @@ def get_naver_blog_content(url):
 
         if content_elem:
             text = content_elem.text
-            text = re.sub(r'\n+', ' ', text)
-            text = re.sub(r'\s+', ' ', text)
+            text = re.sub(r'\n+', ' ', text) # 줄바꿈 정리
+            text = re.sub(r'\s+', ' ', text) # 공백 정리
             return title, text.strip()
         else:
-            return None, None
+            return title, None
     except Exception as e:
-        return None, None
+        return "에러 발생", None
 
 def get_latest_mofa_news():
-    """
-    외교부 블로그 RSS를 뒤져서 '외교부 소식' 최신 글 URL을 가져옴
-    """
+    """외교부 블로그 RSS에서 최신 뉴스 링크를 가져옵니다."""
     rss_url = "https://rss.blog.naver.com/mofakr.xml"
-
+    
     try:
         response = requests.get(rss_url)
         soup = BeautifulSoup(response.content, 'xml')
@@ -87,106 +85,92 @@ def get_latest_mofa_news():
             title = item.title.text
             link = item.link.text
 
-            # '소식', '보도', '대변인' 키워드가 있거나, 없으면 최신글 수집
-            if "소식" in category or "보도" in category or "대변인" in category:
+            # 키워드 필터링
+            if any(keyword in category for keyword in ["소식", "보도", "대변인"]):
                 target_links.append({"title": title, "link": link})
-                if len(target_links) >= 3: # 화면이 너무 길어지지 않게 3개로 조정
-                    break
+                if len(target_links) >= 3: break # 3개만 수집
         
-        # 타겟 글이 없으면 그냥 최신글 3개 가져오기
+        # 필터링 된 게 없으면 그냥 최신글 3개
         if not target_links:
-             target_links = ([{"title": i.title.text, "link": i.link.text} for i in items[:3]])
+             target_links = [{"title": i.title.text, "link": i.link.text} for i in items[:3]]
 
         return target_links
-
     except Exception as e:
         return []
 
-# --- 4. 요약 추론 함수 (제공해주신 후처리 로직 적용) ---
+# --- 4. 요약 및 후처리 함수 ---
 def predict_summary(text):
-    # 입력 길이 제한
+    # 입력 길이 자르기 (오류 방지)
     input_ids = tokenizer.encode(text, return_tensors="pt")
-    # 너무 길면 자르기 (오류 방지)
     if input_ids.shape[1] > 1024:
         input_ids = input_ids[:, :1024]
 
+    # 모델 생성 (요청하신 파라미터 적용)
     summary_ids = model.generate(
         input_ids,
-        max_length=120,       # 요청하신 길이 설정
+        max_length=120,       
         min_length=50,
         length_penalty=1.5,
         num_beams=4,
         early_stopping=True,
         no_repeat_ngram_size=3
     )
-
+    
     summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
 
-    # [후처리 로직] 문장 분리 및 3줄 포맷팅
+    # [3줄 포맷팅 후처리]
     sentences = re.split(r'(?<!\d\.)(?<=[.!?])\s*', summary)
     sentences = [s.strip() for s in sentences if s.strip()]
-
-    formatted_sentences = sentences[:3]
-    while len(formatted_sentences) < 3:
-        formatted_sentences.append("") 
-
-    final_summary = "\n- ".join(formatted_sentences) # 가독성을 위해 불릿 포인트 추가
     
-    # 첫 줄에도 불릿 추가
-    if final_summary:
-        final_summary = "- " + final_summary
+    formatted = sentences[:3] # 최대 3문장
+    
+    # 3줄 리스트로 변환 (화면 출력용)
+    return formatted
 
-    return final_summary
+# --- 5. UI 구성 ---
+tab1, tab2 = st.tabs(["🏛️ 외교부 소식 자동 수집", "📝 직접 입력 요약"])
 
-# --- 5. 화면 구성 ---
-tab1, tab2 = st.tabs(["🏛️ 외교부 소식 자동 수집", "📝 텍스트 직접 요약"])
-
-# [Tab 1] 자동 수집 및 요약
+# [Tab 1] 자동 수집
 with tab1:
     st.header("네이버 블로그 RSS 기반 자동 크롤링")
-    st.info("버튼을 누르면 '외교부 서포터즈(mofakr)' 블로그에서 최신 소식을 가져옵니다.")
+    st.info("버튼을 누르면 '외교부 서포터즈' 블로그의 최신 글을 가져와 요약합니다.")
 
-    if st.button("🚀 최신 소식 가져오기 & 요약", key="btn_auto"):
-        with st.spinner("외교부 블로그 RSS 검색 중..."):
+    if st.button("🚀 최신 소식 가져오기", key="btn_auto"):
+        with st.spinner("RSS 검색 중..."):
             news_items = get_latest_mofa_news()
         
         if not news_items:
-            st.error("RSS를 불러오지 못했습니다.")
+            st.error("RSS 연결 실패. 잠시 후 다시 시도해주세요.")
         else:
-            st.success(f"총 {len(news_items)}개의 최신 글을 발견했습니다!")
-            
-            # 진행상황 표시바
-            progress_bar = st.progress(0)
+            st.success(f"총 {len(news_items)}개의 최신 글을 발견했습니다.")
             
             for i, item in enumerate(news_items):
                 st.markdown(f"### {i+1}. {item['title']}")
-                st.caption(f"🔗 [원문 링크]({item['link']})")
+                st.caption(f"[원문 보러가기]({item['link']})")
                 
-                with st.spinner(f"'{item['title']}' 내용을 읽고 요약 중..."):
+                with st.spinner("본문 읽고 요약 중..."):
                     title, content = get_naver_blog_content(item['link'])
                     
-                    if content:
-                        summary = predict_summary(content)
+                    if content and len(content) > 50:
+                        summary_list = predict_summary(content)
                         st.markdown("**[AI 3줄 요약]**")
-                        st.info(summary)
-                        with st.expander("원문 내용 보기"):
-                            st.write(content[:500] + "...")
+                        for s in summary_list:
+                            st.write(f"- {s}")
                     else:
-                        st.warning("본문 내용을 추출하지 못했습니다 (Iframe 접근 제한 등).")
-                
+                        st.warning("⚠️ 본문 내용을 가져오지 못했습니다. (보안 설정 등)")
                 st.markdown("---")
-                progress_bar.progress((i + 1) / len(news_items))
 
-# [Tab 2] 직접 입력 (백업용)
+# [Tab 2] 직접 입력
 with tab2:
-    st.subheader("뉴스 본문을 붙여넣으면 3줄 요약해 드립니다.")
-    input_text = st.text_area("텍스트 입력", height=300)
+    st.subheader("뉴스 본문을 붙여넣으세요")
+    input_text = st.text_area("텍스트 입력", height=200)
     
     if st.button("요약하기", key="btn_manual"):
-        if len(input_text) > 50:
+        if len(input_text) > 30:
             with st.spinner("요약 중..."):
-                result = predict_summary(input_text)
+                summary_list = predict_summary(input_text)
                 st.success("✅ 요약 완료")
-                st.info(result)
+                for s in summary_list:
+                    st.write(f"- {s}")
         else:
             st.warning("내용이 너무 짧습니다.")
