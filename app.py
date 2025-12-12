@@ -11,12 +11,11 @@ from transformers import PreTrainedTokenizerFast, BartForConditionalGeneration
 st.set_page_config(page_title="외교부 소식 요약 봇", page_icon="📢", layout="wide")
 
 # ==========================================
-# [1] 모델 로드 (모델 교체: ainize -> gogamza)
+# [1] 모델 로드 
 # ==========================================
 @st.cache_resource
 def load_model():
-    # [중요 변경] 에러가 나는 'ainize' 모델을 버리고, 원조인 'gogamza' 모델로 교체합니다.
-    # 이 모델은 최신 환경에서도 에러 없이 잘 돌아갑니다.
+   
     model_name = "gogamza/kobart-summarization"
     
     try:
@@ -27,7 +26,7 @@ def load_model():
         return None, None, str(e)
 
 st.title("📢 외교부 소식 자동 요약 봇")
-st.markdown("Assignment 6: KoBART 뉴스 요약 서비스")
+st.markdown("매일 쏟아지는 국제 정세와 외교부 기사, 다 읽기엔 시간이 부족하죠? 긴 줄글과 복잡한 보도자료를 맡겨보세세요. 버튼 한 번이면, 핵심 내용만 간결하게 요약해 드립니다.")
 
 # 로딩 표시
 with st.spinner('정상적인 AI 모델(gogamza)을 다운로드 중입니다...'):
