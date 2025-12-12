@@ -3,7 +3,8 @@ import torch
 import requests
 import re
 from bs4 import BeautifulSoup
-from transformers import PreTrainedTokenizerFast, BartForConditionalGeneration
+# [수정] 호환성을 위해 AutoTokenizer 사용
+from transformers import AutoTokenizer, BartForConditionalGeneration
 
 # --- 1. 페이지 설정 ---
 st.set_page_config(page_title="외교부 소식 요약 서비스", page_icon="📢", layout="wide")
@@ -12,27 +13,26 @@ st.title("📢 외교부 소식 자동 3줄 요약기")
 st.markdown("Assignment 6: 네이버 블로그 크롤링 및 KoBART 요약 서비스")
 st.markdown("---")
 
-# --- 2. 모델 불러오기 (에러 추적 기능 포함) ---
+# --- 2. 모델 불러오기 (에러 해결: use_fast=False 적용) ---
 @st.cache_resource
 def load_model():
     model_name = "ainize/kobart-news"
     try:
-        # 모델과 토크나이저 다운로드
-        tokenizer = PreTrainedTokenizerFast.from_pretrained(model_name)
+        # [핵심 수정] use_fast=False 옵션을 넣어서 호환성 에러(add_prefix_space...)를 피합니다.
+        tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
         model = BartForConditionalGeneration.from_pretrained(model_name)
-        return tokenizer, model, None # 성공 시 에러 메시지 없음
+        return tokenizer, model, None 
     except Exception as e:
-        return None, None, str(e) # 실패 시 에러 메시지 반환
+        return None, None, str(e)
 
-with st.spinner('AI 모델(KoBART)을 깨우는 중입니다... (최초 1회 다운로드)'):
+with st.spinner('AI 모델을 불러오는 중입니다... (잠시만 기다려주세요)'):
     tokenizer, model, error_msg = load_model()
 
 # 모델 로딩 실패 시 상세 이유 출력
 if model is None:
-    st.error("⚠️ 치명적 오류: 모델을 불러오지 못했습니다.")
-    st.error(f"🔍 에러 상세: {error_msg}")
-    st.warning("💡 팁: 'ImportError'나 'protobuf' 관련 에러라면 터미널에 `pip install protobuf sentencepiece`를 입력하세요.")
-    st.stop() # 여기서 코드 실행 중단
+    st.error("⚠️ 모델 로딩 실패")
+    st.error(f"에러 상세: {error_msg}")
+    st.stop()
 
 # --- 3. 크롤링 함수 (RSS & Iframe 대응) ---
 def get_naver_blog_content(url):
@@ -100,12 +100,12 @@ def get_latest_mofa_news():
 
 # --- 4. 요약 및 후처리 함수 ---
 def predict_summary(text):
-    # 입력 길이 자르기 (오류 방지)
+    # 입력 길이 자르기
     input_ids = tokenizer.encode(text, return_tensors="pt")
     if input_ids.shape[1] > 1024:
         input_ids = input_ids[:, :1024]
 
-    # 모델 생성 (요청하신 파라미터 적용)
+    # 모델 생성
     summary_ids = model.generate(
         input_ids,
         max_length=120,       
@@ -122,9 +122,7 @@ def predict_summary(text):
     sentences = re.split(r'(?<!\d\.)(?<=[.!?])\s*', summary)
     sentences = [s.strip() for s in sentences if s.strip()]
     
-    formatted = sentences[:3] # 최대 3문장
-    
-    # 3줄 리스트로 변환 (화면 출력용)
+    formatted = sentences[:3] 
     return formatted
 
 # --- 5. UI 구성 ---
