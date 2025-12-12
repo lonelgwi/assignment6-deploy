@@ -4,4 +4,5 @@ torch
 requests
 beautifulsoup4
 sentencepiece
-trafilatura
+protobuf
+lxml
