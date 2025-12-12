@@ -1,33 +1,32 @@
 {
-  "name": "Python 3",
-  // Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+  "name": "Streamlit App Environment",
   "image": "mcr.microsoft.com/devcontainers/python:1-3.11-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
+  
+  // 컨테이너가 만들어질 때 자동으로 실행할 명령어
+  // (여기서 requirements.txt에 있는 걸 싹 설치합니다)
+  "postCreateCommand": "pip3 install --user -r requirements.txt",
+
   "customizations": {
-    "codespaces": {
-      "openFiles": [
-        "README.md",
-        "app.py"
-      ]
-    },
     "vscode": {
-      "settings": {},
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python"
+      },
       "extensions": [
         "ms-python.python",
         "ms-python.vscode-pylance"
       ]
     }
   },
-  "updateContentCommand": "[ -f packages.txt ] && sudo apt update && sudo apt upgrade -y && sudo xargs apt install -y <packages.txt; [ -f requirements.txt ] && pip3 install --user -r requirements.txt; pip3 install --user streamlit; echo '✅ Packages installed and Requirements met'",
-  "postAttachCommand": {
-    "server": "streamlit run app.py --server.enableCORS false --server.enableXsrfProtection false"
-  },
+
+  // 스트림릿 포트(8501) 열어두기
+  "forwardPorts": [8501],
   "portsAttributes": {
     "8501": {
-      "label": "Application",
+      "label": "Streamlit Application",
       "onAutoForward": "openPreview"
     }
-  },
-  "forwardPorts": [
-    8501
-  ]
+  }
 }
