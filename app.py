@@ -20,24 +20,33 @@ def load_model():
     model_name = "ainize/kobart-news"
     
     try:
-        # use_fast=False 옵션으로 호환성 에러 방지
+        # [핵심 수정] use_fast=False를 꼭 넣어야 'add_prefix_space' 에러가 안 납니다!
         tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
         model = BartForConditionalGeneration.from_pretrained(model_name)
         return tokenizer, model
     except Exception as e:
-        st.error(f"모델 로드 중 에러 발생: {e}")
-        return None, None
+        # 에러가 나면 화면에 이유를 보여주기 위해 에러 메시지를 반환
+        return None, str(e)
 
 # 모델 불러오기 (로딩 중 표시)
 with st.spinner('인터넷에서 AI 모델(KoBART)을 불러오는 중입니다...'):
-    tokenizer, model = load_model()
+    result = load_model()
+    
+    # 결과가 튜플인지 확인 (성공 시 tokenizer, model 반환)
+    if isinstance(result, tuple) and len(result) == 2:
+        tokenizer, model = result
+    else:
+        # 실패 시 에러 메시지 처리
+        tokenizer = None
+        model = None
+        error_msg = result
 
 # ==========================================
 # [2] 기능 함수들 (크롤링 & 요약)
 # ==========================================
 
 def get_naver_blog_content(url):
-    """네이버 블로그 URL에서 본문만 쏙 뽑아오는 함수 (Tab 2용)"""
+    """네이버 블로그 URL에서 본문만 쏙 뽑아오는 함수"""
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         if "m.blog.naver.com" in url:
@@ -76,7 +85,6 @@ def get_latest_mofa_news():
         results = []
         for item in items:
             cat = item.category.text if item.category else ""
-            # '소식', '보도', '대변인' 관련 글만 필터링
             if "소식" in cat or "보도" in cat or "대변인" in cat:
                 results.append({"title": item.title.text, "link": item.link.text})
                 if len(results) >= 3: break 
@@ -89,18 +97,16 @@ def get_latest_mofa_news():
 
 def summarize(text):
     """모델에게 요약을 시키는 함수"""
-    if tokenizer is None: return "모델이 준비되지 않았습니다."
+    if tokenizer is None: return "모델 로딩 실패"
     
-    # 입력 문장 토큰화 (길면 자르기)
     inputs = tokenizer(text, return_tensors="pt", max_length=1024, truncation=True)
     
-    # 요약 생성
     with torch.no_grad():
         summary_ids = model.generate(
             inputs["input_ids"],
             max_length=128,      
             min_length=30,
-            length_penalty=1.0, # 패널티 조정
+            length_penalty=1.0,
             num_beams=4,
             early_stopping=True
         )
@@ -115,8 +121,13 @@ def summarize(text):
 st.title("🏛️ 외교부 소식 자동 요약 봇")
 st.markdown("Assignment 6: **KoBART 모델**을 활용한 뉴스 요약 서비스")
 
+# 에러 메시지 처리 (중요)
 if tokenizer is None:
-    st.error("⚠️ 모델을 불러오지 못했습니다. `pip install protobuf sentencepiece`를 확인하세요.")
+    st.error("⚠️ 모델을 불러오지 못했습니다.")
+    # 아까 발생한 에러 메시지를 화면에 찍어줍니다.
+    if 'error_msg' in locals() and error_msg:
+        st.code(f"에러 상세: {error_msg}")
+    st.warning("💡 팁: pip install protobuf sentencepiece 명령어가 실행되었는지 확인하세요.")
     st.stop()
 else:
     st.success("✅ AI 모델 준비 완료 (ainize/kobart-news)")
@@ -124,11 +135,10 @@ else:
 # 탭 만들기
 tab1, tab2 = st.tabs(["📝 텍스트 직접 입력", "📡 외교부 소식 자동 수집"])
 
-# [Tab 1] 직접 입력해서 요약하기 (URL 입력 X -> 텍스트 입력 O)
+# [Tab 1] 직접 입력
 with tab1:
     st.header("기사 본문 요약")
     st.caption("요약하고 싶은 긴 글을 아래에 복사해서 붙여넣으세요.")
-    
     input_text = st.text_area("여기에 내용을 입력하세요", height=300)
     
     if st.button("요약하기", key="btn_manual"):
@@ -140,31 +150,24 @@ with tab1:
         else:
             st.warning("내용이 너무 짧습니다. 50자 이상 입력해주세요.")
 
-# [Tab 2] 외교부 소식 자동 가져오기 (기존 기능 유지)
+# [Tab 2] 자동 수집
 with tab2:
     st.header("오늘의 외교부 브리핑")
-    st.caption("버튼을 누르면 외교부 공식 블로그에서 최신 글을 가져와 요약합니다.")
-    
     if st.button("최신 소식 가져오기", type="primary", key="btn_auto"):
         with st.spinner("외교부 블로그 스캔 중..."):
             news_items = get_latest_mofa_news()
-            
             if news_items:
                 st.success(f"총 {len(news_items)}개의 최신 소식을 찾았습니다.")
                 for idx, item in enumerate(news_items):
                     st.markdown(f"### {idx+1}. [{item['title']}]({item['link']})")
-                    
-                    # 각 글 내용 가져오기 & 요약
                     title, content = get_naver_blog_content(item['link'])
-                    
                     if content:
                         summary_text = summarize(content)
                         st.info(f"**AI 요약**: {summary_text}")
                         with st.expander("원문 보기"):
                             st.write(content)
                     else:
-                        st.error("본문 접근 불가 (보안 설정 등)")
-                    
+                        st.error("본문 접근 불가")
                     st.divider()
             else:
                 st.warning("새로운 소식을 찾을 수 없습니다.")
