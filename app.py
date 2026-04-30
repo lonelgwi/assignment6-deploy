@@ -19,9 +19,9 @@ st.set_page_config(
 # 배포 환경에서는 Streamlit Cloud의 Settings > Secrets에 GEMINI_API_KEY를 등록하세요.
 API_KEY = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
 
-# 404 에러 해결을 위해 가장 안정적인 v1 정식 버전 엔드포인트를 사용합니다.
+# 404 에러 방지를 위해 호환성이 가장 높은 v1beta 엔드포인트를 사용합니다.
 MODEL_ID = "gemini-1.5-flash"
-API_VERSION = "v1" 
+API_VERSION = "v1beta" 
 
 # UI 스타일 커스터마이징
 st.markdown("""
@@ -58,16 +58,19 @@ def call_gemini_api(prompt, system_instruction):
     if not API_KEY:
         return "⚠️ API 키가 설정되지 않았습니다. Streamlit Secrets에서 GEMINI_API_KEY를 등록해주세요."
 
-    # v1 정식 버전 URL 구성
+    # API URL 구성 (v1beta 버전 엔드포인트)
     url = f"https://generativelanguage.googleapis.com/{API_VERSION}/models/{MODEL_ID}:generateContent?key={API_KEY}"
     
-    # v1 규격에 맞춘 페이로드 구조 (호환성을 위해 시스템 프롬프트를 텍스트 상단에 결합)
+    # v1beta 규격에 맞춘 시스템 명령 포함 페이로드
     payload = {
         "contents": [
             {
-                "parts": [{"text": f"{system_instruction}\n\n요약할 내용:\n{prompt}"}]
+                "parts": [{"text": prompt}]
             }
         ],
+        "system_instruction": {
+            "parts": [{"text": system_instruction}]
+        },
         "generationConfig": {
             "temperature": 0.2,
             "maxOutputTokens": 1024,
@@ -88,16 +91,18 @@ def call_gemini_api(prompt, system_instruction):
                 return "AI가 응답을 생성했지만 내용을 찾을 수 없습니다."
             
             elif response.status_code == 404:
-                return f"❌ 404 오류: 모델을 찾을 수 없습니다. API 버전({API_VERSION})이나 모델 ID({MODEL_ID})가 사용자님의 지역/계정에서 지원되는지 확인해주세요."
+                # 404 오류 발생 시 상세 서버 메시지 반환
+                return f"❌ 404 오류: 모델 경로를 찾을 수 없습니다. (모델: {MODEL_ID}, 버전: {API_VERSION})\n서버 응답: {response.text}"
             
             elif response.status_code == 403:
-                return "❌ 403 오류: API 키 권한이 없거나 차단되었습니다. 키가 활성화 상태인지 확인하세요."
+                return "❌ 403 오류: API 키 권한이 없거나 차단되었습니다. Google AI Studio에서 API 키 상태를 확인하세요."
             
             elif response.status_code == 429:
                 time.sleep(2 ** i)
             else:
                 return f"에러 발생 (상태 코드: {response.status_code})\n상세내용: {response.text}"
         except Exception as e:
+            if i == 2: return f"연결 오류: {str(e)}"
             time.sleep(1)
             
     return "요약 서비스 연결에 실패했습니다. 네트워크 상태를 다시 확인해주세요."
