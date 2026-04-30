@@ -19,8 +19,8 @@ st.set_page_config(
 # 배포 환경에서는 Streamlit Cloud의 Settings > Secrets에 GEMINI_API_KEY를 등록하세요.
 API_KEY = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
 
-# 404 에러 방지를 위해 호환성이 가장 높은 v1beta 엔드포인트를 사용합니다.
-MODEL_ID = "gemini-1.5-flash"
+# 제공해주신 curl 명령어 기반으로 모델 ID와 API 버전을 설정합니다.
+MODEL_ID = "gemini-flash-latest"
 API_VERSION = "v1beta" 
 
 # UI 스타일 커스터마이징
@@ -58,28 +58,33 @@ def call_gemini_api(prompt, system_instruction):
     if not API_KEY:
         return "⚠️ API 키가 설정되지 않았습니다. Streamlit Secrets에서 GEMINI_API_KEY를 등록해주세요."
 
-    # API URL 구성 (v1beta 버전 엔드포인트)
-    url = f"https://generativelanguage.googleapis.com/{API_VERSION}/models/{MODEL_ID}:generateContent?key={API_KEY}"
+    # curl 명령어 형식에 맞춘 엔드포인트 URL
+    url = f"https://generativelanguage.googleapis.com/{API_VERSION}/models/{MODEL_ID}:generateContent"
     
-    # v1beta 규격에 맞춘 시스템 명령 포함 페이로드
+    # curl 명령어와 동일한 헤더 설정 (X-goog-api-key 사용)
+    headers = {
+        "Content-Type": "application/json",
+        "X-goog-api-key": API_KEY
+    }
+    
+    # 페이로드 구조
     payload = {
         "contents": [
             {
-                "parts": [{"text": prompt}]
+                "parts": [
+                    {
+                        "text": f"System Instruction: {system_instruction}\n\nUser Input: {prompt}"
+                    }
+                ]
             }
         ],
-        "system_instruction": {
-            "parts": [{"text": system_instruction}]
-        },
         "generationConfig": {
             "temperature": 0.2,
             "maxOutputTokens": 1024,
         }
     }
     
-    headers = {"Content-Type": "application/json"}
-    
-    # 지수 백오프를 적용한 재시도 로직
+    # 재시도 로직
     for i in range(3):
         try:
             response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=30)
@@ -88,34 +93,33 @@ def call_gemini_api(prompt, system_instruction):
                 result = response.json()
                 if 'candidates' in result and len(result['candidates']) > 0:
                     return result['candidates'][0]['content']['parts'][0]['text']
-                return "AI가 응답을 생성했지만 내용을 찾을 수 없습니다."
+                return "AI가 응답을 생성했지만 내용을 추출할 수 없습니다."
             
             elif response.status_code == 404:
-                # 404 오류 발생 시 상세 서버 메시지 반환
-                return f"❌ 404 오류: 모델 경로를 찾을 수 없습니다. (모델: {MODEL_ID}, 버전: {API_VERSION})\n서버 응답: {response.text}"
+                return f"❌ 404 오류: 모델 경로를 찾을 수 없습니다. (모델: {MODEL_ID}, 버전: {API_VERSION})"
             
             elif response.status_code == 403:
-                return "❌ 403 오류: API 키 권한이 없거나 차단되었습니다. Google AI Studio에서 API 키 상태를 확인하세요."
+                return "❌ 403 오류: API 키 권한이 없거나 차단되었습니다. 키가 올바른지 확인하세요."
             
             elif response.status_code == 429:
                 time.sleep(2 ** i)
             else:
-                return f"에러 발생 (상태 코드: {response.status_code})\n상세내용: {response.text}"
+                return f"에러 발생 (코드: {response.status_code})\n{response.text}"
         except Exception as e:
-            if i == 2: return f"연결 오류: {str(e)}"
+            if i == 2: return f"연결 오류 발생: {str(e)}"
             time.sleep(1)
             
-    return "요약 서비스 연결에 실패했습니다. 네트워크 상태를 다시 확인해주세요."
+    return "요약 서비스 연결에 실패했습니다."
 
 def summarize_text(text):
     if not text or len(text.strip()) < 20:
-        return "요약할 내용이 너무 짧습니다. 최소 20자 이상 입력해주세요."
+        return "내용이 너무 짧아 요약할 수 없습니다. (최소 20자 이상)"
     
-    system_prompt = "당신은 외교부 소식 요약 전문가입니다. 입력된 텍스트를 분석하여 가장 중요한 핵심 내용 3가지를 불렛포인트 형태로 요약하세요. 정중하고 전문적인 한국어(~했습니다 체)를 사용하세요."
+    system_prompt = "당신은 외교부 소식 요약 전문가입니다. 입력된 텍스트의 핵심 내용을 3가지 불렛포인트로 요약하세요. 정중한 한국어(~했습니다 체)를 사용하세요."
     return call_gemini_api(text, system_prompt)
 
 # ==========================================
-# [2] 데이터 수집 함수
+# [2] 데이터 수집 함수 (기존 로직 유지)
 # ==========================================
 @st.cache_data(ttl=3600)
 def get_mofa_news_list():
@@ -155,43 +159,44 @@ def get_full_content(url):
         return None
 
 # ==========================================
-# [3] 메인 UI
+# [3] 메인 UI 구성
 # ==========================================
 def main():
     st.title("📢 외교부 소식 자동 요약 봇")
+    st.info("최신 외교 동향을 AI를 통해 빠르게 파악하세요.")
     
     if 'news_summaries' not in st.session_state:
         st.session_state.news_summaries = {}
 
-    tab1, tab2 = st.tabs(["✍️ 직접 입력", "📰 최신 소식 피드"])
+    tab1, tab2 = st.tabs(["✍️ 직접 입력 요약", "📰 최신 소식 리스트"])
 
     with tab1:
-        input_txt = st.text_area("요약할 텍스트를 여기에 붙여넣으세요.", height=300)
+        input_txt = st.text_area("요약할 본문을 붙여넣으세요.", height=300)
         if st.button("AI 요약 시작", key="btn_man"):
             if input_txt:
-                with st.spinner("AI가 분석 중입니다..."):
+                with st.spinner("AI 분석 중..."):
                     summary = summarize_text(input_txt)
                     st.markdown(f'<div class="summary-box">{summary}</div>', unsafe_allow_html=True)
             else:
-                st.warning("텍스트를 먼저 입력해주세요.")
+                st.warning("내용을 입력해주세요.")
 
     with tab2:
         news_items = get_mofa_news_list()
         if not news_items:
-            st.write("불러올 수 있는 소식이 없습니다.")
+            st.write("소식을 불러올 수 없습니다.")
         else:
             for idx, item in enumerate(news_items):
                 st.markdown(f"#### {item['title']}")
-                st.caption(f"발행일: {item['pubDate']}")
+                st.caption(f"날짜: {item['pubDate']}")
                 
-                if st.button(f"이 소식 요약하기", key=f"btn_{idx}"):
-                    with st.spinner("기사 본문을 읽고 요약하는 중..."):
+                if st.button(f"요약하기", key=f"btn_{idx}"):
+                    with st.spinner("본문을 읽고 요약 중..."):
                         content = get_full_content(item['link'])
                         if content:
                             summary = summarize_text(content)
                             st.session_state.news_summaries[item['link']] = summary
                         else:
-                            st.error("기사 본문을 가져오는 데 실패했습니다.")
+                            st.error("본문을 가져올 수 없습니다.")
                 
                 if item['link'] in st.session_state.news_summaries:
                     st.markdown(f'<div class="summary-box"><b>AI 요약 결과:</b><br><br>{st.session_state.news_summaries[item["link"]]}</div>', unsafe_allow_html=True)
