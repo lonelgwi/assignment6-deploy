@@ -16,11 +16,12 @@ st.set_page_config(
 )
 
 # API 설정
-# 팁: 배포 환경에서는 st.secrets["GEMINI_API_KEY"]를 사용하여 키를 관리하세요.
+# 배포 환경에서는 Streamlit Cloud의 Settings > Secrets에 GEMINI_API_KEY를 등록하세요.
 API_KEY = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
 
-# 모델 ID를 가장 범용적인 gemini-1.5-flash로 변경 (403 오류 방지)
-MODEL_ID = "gemini-1.5-flash" 
+# Gemini 1.5 Flash 모델은 v1beta 버전을 사용하는 것이 가장 안정적입니다.
+MODEL_ID = "gemini-1.5-flash"
+API_VERSION = "v1beta" 
 
 # UI 스타일 커스터마이징
 st.markdown("""
@@ -57,45 +58,64 @@ def call_gemini_api(prompt, system_instruction):
     if not API_KEY:
         return "⚠️ API 키가 설정되지 않았습니다. Streamlit Secrets에서 GEMINI_API_KEY를 등록해주세요."
 
-    # API URL 구성
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_ID}:generateContent?key={API_KEY}"
+    # API URL 구성 (v1beta 버전을 사용하여 시스템 인스트럭션 기능 활용)
+    url = f"https://generativelanguage.googleapis.com/{API_VERSION}/models/{MODEL_ID}:generateContent?key={API_KEY}"
     
+    # v1beta 규격에 맞춘 페이로드 구조
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "systemInstruction": {"parts": [{"text": system_instruction}]}
+        "contents": [
+            {
+                "parts": [{"text": prompt}]
+            }
+        ],
+        "system_instruction": {
+            "parts": [{"text": system_instruction}]
+        },
+        "generationConfig": {
+            "temperature": 0.2,
+            "topP": 0.8,
+            "topK": 40,
+            "maxOutputTokens": 1024,
+        }
     }
     
     headers = {"Content-Type": "application/json"}
     
-    for i in range(3):  # 재시도 횟수 조정
+    # 지수 백오프를 적용한 재시도 로직
+    for i in range(3):
         try:
             response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=30)
             
             if response.status_code == 200:
                 result = response.json()
-                if 'candidates' in result:
+                if 'candidates' in result and len(result['candidates']) > 0:
                     return result['candidates'][0]['content']['parts'][0]['text']
-                return "응답 데이터를 해석할 수 없습니다."
+                return "AI가 응답을 생성했지만 내용을 찾을 수 없습니다."
+            
+            elif response.status_code == 404:
+                return f"❌ 404 오류: 모델 경로를 찾을 수 없습니다. API 버전({API_VERSION})이나 모델 ID({MODEL_ID})가 올바른지 확인하세요."
+            
             elif response.status_code == 403:
-                return "❌ API 권한 오류(403): API 키가 이 모델({0})을 지원하지 않거나 활성화되지 않았습니다.".format(MODEL_ID)
+                return "❌ 403 오류: API 키 권한이 없거나 모델 접근이 차단되었습니다."
+            
             elif response.status_code == 429:
                 time.sleep(2 ** i)
             else:
-                return f"에러 발생 (코드: {response.status_code})"
+                return f"에러 발생 (상태 코드: {response.status_code})\n상세내용: {response.text}"
         except Exception as e:
             time.sleep(1)
             
-    return "요약 서비스 연결에 실패했습니다."
+    return "요약 서비스 연결에 실패했습니다. API 키와 네트워크 상태를 다시 확인해주세요."
 
 def summarize_text(text):
     if not text or len(text.strip()) < 20:
-        return "요약할 내용이 너무 짧습니다."
+        return "요약할 내용이 너무 짧습니다. 최소 20자 이상 입력해주세요."
     
-    system_prompt = "당신은 외교부 소식 요약 전문가입니다. 핵심 내용을 3가지 불렛포인트로 요약하세요."
+    system_prompt = "당신은 외교부 소식 요약 전문가입니다. 입력된 텍스트를 분석하여 가장 중요한 핵심 내용 3가지를 불렛포인트 형태로 요약하세요. 정중하고 전문적인 한국어(~했습니다 체)를 사용하세요."
     return call_gemini_api(text, system_prompt)
 
 # ==========================================
-# [2] 데이터 수집 함수 (기존 유지)
+# [2] 데이터 수집 함수
 # ==========================================
 @st.cache_data(ttl=3600)
 def get_mofa_news_list():
@@ -146,26 +166,36 @@ def main():
     tab1, tab2 = st.tabs(["✍️ 직접 입력", "📰 최신 소식 피드"])
 
     with tab1:
-        input_txt = st.text_area("내용을 입력하세요.", height=300)
-        if st.button("AI 요약", key="btn_man"):
+        input_txt = st.text_area("요약할 텍스트를 여기에 붙여넣으세요.", height=300)
+        if st.button("AI 요약 시작", key="btn_man"):
             if input_txt:
-                with st.spinner("분석 중..."):
-                    st.markdown(f'<div class="summary-box">{summarize_text(input_txt)}</div>', unsafe_allow_html=True)
+                with st.spinner("AI가 문맥을 분석하여 요약 중입니다..."):
+                    summary = summarize_text(input_txt)
+                    st.markdown(f'<div class="summary-box">{summary}</div>', unsafe_allow_html=True)
+            else:
+                st.warning("텍스트를 먼저 입력해주세요.")
 
     with tab2:
         news_items = get_mofa_news_list()
-        for idx, item in enumerate(news_items):
-            st.markdown(f"#### {item['title']}")
-            if st.button(f"요약 보기", key=f"btn_{idx}"):
-                with st.spinner("진행 중..."):
-                    content = get_full_content(item['link'])
-                    if content:
-                        summary = summarize_text(content)
-                        st.session_state.news_summaries[item['link']] = summary
-            
-            if item['link'] in st.session_state.news_summaries:
-                st.markdown(f'<div class="summary-box">{st.session_state.news_summaries[item["link"]]}</div>', unsafe_allow_html=True)
-            st.divider()
+        if not news_items:
+            st.write("불러올 수 있는 소식이 없습니다.")
+        else:
+            for idx, item in enumerate(news_items):
+                st.markdown(f"#### {item['title']}")
+                st.caption(f"발행일: {item['pubDate']}")
+                
+                if st.button(f"이 소식 요약하기", key=f"btn_{idx}"):
+                    with st.spinner("기사 본문을 읽고 요약하는 중..."):
+                        content = get_full_content(item['link'])
+                        if content:
+                            summary = summarize_text(content)
+                            st.session_state.news_summaries[item['link']] = summary
+                        else:
+                            st.error("기사 본문을 가져오는 데 실패했습니다.")
+                
+                if item['link'] in st.session_state.news_summaries:
+                    st.markdown(f'<div class="summary-box"><b>AI 요약 결과:</b><br><br>{st.session_state.news_summaries[item["link"]]}</div>', unsafe_allow_html=True)
+                st.divider()
 
 if __name__ == "__main__":
     main()
