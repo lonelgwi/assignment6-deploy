@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 # [설정] 페이지 설정 및 스타일
 # ==========================================
 st.set_page_config(
-    page_title="외교부 소식 요약 봇", 
+    page_title="외교부 소식 요약", 
     page_icon="📢", 
     layout="wide",
     initial_sidebar_state="expanded"
@@ -177,15 +177,15 @@ def get_full_content(url):
 # [3] 메인 UI 구성
 # ==========================================
 def main():
-    st.title("📢 외교부 소식 자동 요약 봇")
+    st.title("📢 외교부 소식 자동 요약")
     st.info("최신 외교 동향을 AI를 통해 빠르게 파악하고 전문을 확인하세요.")
     
     if 'news_data' not in st.session_state:
         st.session_state.news_data = {}
 
-    tab1, tab2 = st.tabs(["✍️ 직접 입력 요약", "📰 최신 소식 리스트"])
+    tab1, tab2 = st.tabs(["📰 최신 소식 리스트","✍️ 직접 입력 요약"])
 
-    with tab1:
+    with tab2:
         input_txt = st.text_area("요약할 본문을 붙여넣으세요.", height=300)
         if st.button("AI 요약 시작", key="btn_man"):
             if input_txt:
@@ -196,7 +196,7 @@ def main():
             else:
                 st.warning("내용을 입력해주세요.")
 
-    with tab2:
+    with tab1:
         news_items = get_mofa_news_list()
         if not news_items:
             st.write("소식을 불러올 수 없습니다.")
