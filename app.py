@@ -43,13 +43,15 @@ st.markdown("""
         box-shadow: 0 4px 12px rgba(0,0,0,0.05);
         margin: 15px 0;
         line-height: 1.6;
+        color: #1e293b;
     }
-    .news-card {
-        background-color: white;
-        padding: 20px;
+    .error-box {
+        background-color: #fff5f5;
+        padding: 15px;
         border-radius: 12px;
-        border: 1px solid #eee;
-        margin-bottom: 20px;
+        border: 1px solid #feb2b2;
+        color: #c53030;
+        margin: 10px 0;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -76,20 +78,29 @@ def call_gemini_api(prompt, system_instruction):
             response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=30)
             if response.status_code == 200:
                 result = response.json()
-                return result['candidates'][0]['content']['parts'][0]['text']
-            elif response.status_code == 429: # 할당량 초과 시 대기
+                # API 응답 구조 확인 및 텍스트 추출
+                if 'candidates' in result and len(result['candidates']) > 0:
+                    parts = result['candidates'][0].get('content', {}).get('parts', [])
+                    if parts:
+                        return parts[0].get('text', "요약 내용을 생성하지 못했습니다.")
+                return "API 응답 형식이 올바르지 않습니다."
+            elif response.status_code == 429: # 할당량 초과
                 time.sleep(2 ** i)
+            elif response.status_code == 400:
+                return f"잘못된 요청입니다 (400). API 키나 설정을 확인해주세요."
             else:
-                break
-        except Exception:
+                if i == 5: return f"API 서버 오류 (상태 코드: {response.status_code})"
+                time.sleep(2 ** i)
+        except Exception as e:
+            if i == 5: return f"연결 오류 발생: {str(e)}"
             time.sleep(2 ** i)
             
     return "현재 요약 엔진을 사용할 수 없습니다. 잠시 후 다시 시도해주세요."
 
 def summarize_text(text):
     """입력된 텍스트를 외교 전문 스타일로 요약"""
-    if len(text.strip()) < 20:
-        return "요약할 내용이 너무 충분하지 않습니다. 조금 더 긴 내용을 입력해주세요."
+    if not text or len(text.strip()) < 20:
+        return "요약할 내용이 충분하지 않습니다. (최소 20자 이상 필요)"
     
     system_prompt = (
         "당신은 외교부 소식을 전달하는 전문 큐레이터입니다. "
@@ -113,14 +124,13 @@ def get_mofa_news_list():
         valid_news = []
         for item in items:
             category = item.category.text if item.category else ""
-            # 관련 카테고리 필터링
             if any(kw in category for kw in ["소식", "보도", "대변인", "브리핑"]):
                 valid_news.append({
                     "title": item.title.text,
                     "link": item.link.text,
                     "pubDate": item.pubDate.text if item.pubDate else ""
                 })
-                if len(valid_news) >= 5: break # 최신 5개만 가져옴
+                if len(valid_news) >= 5: break
         return valid_news
     except Exception as e:
         st.error(f"데이터 로드 중 오류 발생: {e}")
@@ -130,23 +140,19 @@ def get_full_content(url):
     """네이버 블로그 URL에서 실제 본문 텍스트 추출"""
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
-        # 모바일 링크 처리
         url = url.replace("m.blog", "blog")
         
         res = requests.get(url, headers=headers)
         soup = BeautifulSoup(res.text, "html.parser")
         
-        # 네이버 블로그는 본문이 iframe 안에 있음
         iframe = soup.select_one("iframe#mainFrame")
         if iframe:
             inner_url = "https://blog.naver.com" + iframe["src"]
             res = requests.get(inner_url, headers=headers)
             soup = BeautifulSoup(res.text, "html.parser")
             
-        # 다양한 본문 선택자 대응
         content_area = soup.select_one(".se-main-container") or soup.select_one("#postViewArea")
         if content_area:
-            # 불필요한 공백 및 개행 정리
             text = content_area.get_text(separator=' ')
             return ' '.join(text.split())
         return None
@@ -159,6 +165,10 @@ def get_full_content(url):
 def main():
     st.title("📢 외교부 소식 자동 요약 봇 v2.1")
     st.info("최신 외교 동향과 보도자료를 AI가 분석하여 핵심만 요약해 드립니다.")
+
+    # 세션 상태 초기화 (요약 결과 저장용)
+    if 'news_summaries' not in st.session_state:
+        st.session_state.news_summaries = {}
 
     tab1, tab2 = st.tabs(["✍️ 직접 입력 요약", "📰 최신 외교부 피드"])
 
@@ -189,7 +199,8 @@ def main():
         st.subheader("외교부 공식 블로그 최신 소식 (실시간)")
         
         if st.button("🔄 소식 새로고침", key="btn_refresh"):
-            st.cache_data.clear() # 캐시 강제 삭제
+            st.cache_data.clear()
+            st.session_state.news_summaries = {} # 요약 이력도 초기화
 
         news_items = get_mofa_news_list()
         
@@ -197,21 +208,33 @@ def main():
             st.write("가져올 수 있는 최신 소식이 없습니다.")
         else:
             for idx, item in enumerate(news_items):
+                news_id = item['link'] # 고유 ID로 링크 사용
+                
                 with st.container():
                     st.markdown(f"#### {item['title']}")
                     st.caption(f"📅 {item['pubDate']} | [원문 읽기]({item['link']})")
                     
-                    # 요약 버튼을 각 뉴스별로 배치
+                    # 요약 실행 버튼
                     if st.button(f"이 소식 요약하기", key=f"btn_news_{idx}"):
                         with st.spinner("본문을 수집하여 요약 중입니다..."):
                             full_text = get_full_content(item['link'])
                             if full_text:
                                 summary = summarize_text(full_text)
-                                st.markdown(f'<div class="summary-box"><b>AI 핵심 요약:</b><br><br>{summary}</div>', unsafe_allow_html=True)
-                                with st.expander("본문 미리보기"):
-                                    st.write(full_text[:1000] + "...")
+                                # 세션 상태에 요약 결과 저장
+                                st.session_state.news_summaries[news_id] = {
+                                    'summary': summary,
+                                    'full_text': full_text
+                                }
                             else:
                                 st.error("본문 내용을 가져오는 데 실패했습니다.")
+                    
+                    # 요약 결과가 세션에 있으면 표시
+                    if news_id in st.session_state.news_summaries:
+                        data = st.session_state.news_summaries[news_id]
+                        st.markdown(f'<div class="summary-box"><b>AI 핵심 요약:</b><br><br>{data["summary"]}</div>', unsafe_allow_html=True)
+                        with st.expander("본문 미리보기"):
+                            st.write(data["full_text"][:1000] + "...")
+                    
                     st.divider()
 
     # Footer
