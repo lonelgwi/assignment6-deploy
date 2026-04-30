@@ -19,9 +19,9 @@ st.set_page_config(
 # 배포 환경에서는 Streamlit Cloud의 Settings > Secrets에 GEMINI_API_KEY를 등록하세요.
 API_KEY = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
 
-# Gemini 1.5 Flash 모델은 v1beta 버전을 사용하는 것이 가장 안정적입니다.
+# 404 에러 해결을 위해 가장 안정적인 v1 정식 버전 엔드포인트를 사용합니다.
 MODEL_ID = "gemini-1.5-flash"
-API_VERSION = "v1beta" 
+API_VERSION = "v1" 
 
 # UI 스타일 커스터마이징
 st.markdown("""
@@ -58,23 +58,18 @@ def call_gemini_api(prompt, system_instruction):
     if not API_KEY:
         return "⚠️ API 키가 설정되지 않았습니다. Streamlit Secrets에서 GEMINI_API_KEY를 등록해주세요."
 
-    # API URL 구성 (v1beta 버전을 사용하여 시스템 인스트럭션 기능 활용)
+    # v1 정식 버전 URL 구성
     url = f"https://generativelanguage.googleapis.com/{API_VERSION}/models/{MODEL_ID}:generateContent?key={API_KEY}"
     
-    # v1beta 규격에 맞춘 페이로드 구조
+    # v1 규격에 맞춘 페이로드 구조 (호환성을 위해 시스템 프롬프트를 텍스트 상단에 결합)
     payload = {
         "contents": [
             {
-                "parts": [{"text": prompt}]
+                "parts": [{"text": f"{system_instruction}\n\n요약할 내용:\n{prompt}"}]
             }
         ],
-        "system_instruction": {
-            "parts": [{"text": system_instruction}]
-        },
         "generationConfig": {
             "temperature": 0.2,
-            "topP": 0.8,
-            "topK": 40,
             "maxOutputTokens": 1024,
         }
     }
@@ -93,10 +88,10 @@ def call_gemini_api(prompt, system_instruction):
                 return "AI가 응답을 생성했지만 내용을 찾을 수 없습니다."
             
             elif response.status_code == 404:
-                return f"❌ 404 오류: 모델 경로를 찾을 수 없습니다. API 버전({API_VERSION})이나 모델 ID({MODEL_ID})가 올바른지 확인하세요."
+                return f"❌ 404 오류: 모델을 찾을 수 없습니다. API 버전({API_VERSION})이나 모델 ID({MODEL_ID})가 사용자님의 지역/계정에서 지원되는지 확인해주세요."
             
             elif response.status_code == 403:
-                return "❌ 403 오류: API 키 권한이 없거나 모델 접근이 차단되었습니다."
+                return "❌ 403 오류: API 키 권한이 없거나 차단되었습니다. 키가 활성화 상태인지 확인하세요."
             
             elif response.status_code == 429:
                 time.sleep(2 ** i)
@@ -105,7 +100,7 @@ def call_gemini_api(prompt, system_instruction):
         except Exception as e:
             time.sleep(1)
             
-    return "요약 서비스 연결에 실패했습니다. API 키와 네트워크 상태를 다시 확인해주세요."
+    return "요약 서비스 연결에 실패했습니다. 네트워크 상태를 다시 확인해주세요."
 
 def summarize_text(text):
     if not text or len(text.strip()) < 20:
@@ -169,7 +164,7 @@ def main():
         input_txt = st.text_area("요약할 텍스트를 여기에 붙여넣으세요.", height=300)
         if st.button("AI 요약 시작", key="btn_man"):
             if input_txt:
-                with st.spinner("AI가 문맥을 분석하여 요약 중입니다..."):
+                with st.spinner("AI가 분석 중입니다..."):
                     summary = summarize_text(input_txt)
                     st.markdown(f'<div class="summary-box">{summary}</div>', unsafe_allow_html=True)
             else:
