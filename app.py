@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 # [설정] 페이지 설정 및 스타일
 # ==========================================
 st.set_page_config(
-    page_title="외교부 소식 요약 봇", 
+    page_title="외교부 소식 요약", 
     page_icon="📢", 
     layout="wide",
     initial_sidebar_state="expanded"
