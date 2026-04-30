@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 # [설정] 페이지 설정 및 스타일
 # ==========================================
 st.set_page_config(
-    page_title="외교부 소식 요약", 
+    page_title="외교부 소식 요약 봇", 
     page_icon="📢", 
     layout="wide",
     initial_sidebar_state="expanded"
@@ -19,8 +19,8 @@ st.set_page_config(
 # 배포 환경에서는 Streamlit Cloud의 Settings > Secrets에 GEMINI_API_KEY를 등록하세요.
 API_KEY = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
 
-# 모델 ID와 API 버전 설정
-MODEL_ID = "gemini-flash-latest"
+# 모델 ID와 API 버전 설정 (안정성과 성능이 검증된 최신 모델로 변경)
+MODEL_ID = "gemini-2.5-flash-preview-09-2025"
 API_VERSION = "v1beta" 
 
 # UI 스타일 커스터마이징
@@ -76,19 +76,19 @@ def call_gemini_api(prompt, system_instruction):
         "X-goog-api-key": API_KEY
     }
     
+    # 끊김 방지를 위해 maxOutputTokens 상향 및 systemInstruction 필드 활용
     payload = {
         "contents": [
             {
-                "parts": [
-                    {
-                        "text": f"System Instruction: {system_instruction}\n\nUser Input: {prompt}"
-                    }
-                ]
+                "parts": [{"text": prompt}]
             }
         ],
+        "systemInstruction": {
+            "parts": [{"text": system_instruction}]
+        },
         "generationConfig": {
-            "temperature": 0.2,
-            "maxOutputTokens": 1024,
+            "temperature": 0.3,
+            "maxOutputTokens": 2048,
         }
     }
     
@@ -99,11 +99,12 @@ def call_gemini_api(prompt, system_instruction):
             if response.status_code == 200:
                 result = response.json()
                 if 'candidates' in result and len(result['candidates']) > 0:
-                    return result['candidates'][0]['content']['parts'][0]['text']
+                    output = result['candidates'][0]['content']['parts'][0]['text']
+                    return output.strip()
                 return "AI가 응답을 생성했지만 내용을 추출할 수 없습니다."
             
             elif response.status_code == 404:
-                return f"❌ 404 오류: 모델 경로를 찾을 수 없습니다. (모델: {MODEL_ID}, 버전: {API_VERSION})"
+                return f"❌ 404 오류: 모델 경로를 찾을 수 없습니다. (모델: {MODEL_ID})"
             
             elif response.status_code == 403:
                 return "❌ 403 오류: API 키 권한이 없거나 차단되었습니다."
@@ -122,7 +123,12 @@ def summarize_text(text):
     if not text or len(text.strip()) < 20:
         return "내용이 너무 짧아 요약할 수 없습니다. (최소 20자 이상)"
     
-    system_prompt = "당신은 외교부 소식 요약 전문가입니다. 입력된 텍스트의 핵심 내용을 3가지 불렛포인트로 요약하세요. 정중한 한국어(~했습니다 체)를 사용하세요."
+    # 문장이 끊기지 않도록 명시적 지시 추가
+    system_prompt = (
+        "당신은 외교부 소식 요약 전문가입니다. 입력된 텍스트의 핵심 내용을 3가지 불렛포인트로 요약하세요. "
+        "문장이 중간에 끊기지 않도록 반드시 마침표까지 완성해서 답변하세요. "
+        "정중한 한국어(~했습니다 체)를 사용하세요."
+    )
     return call_gemini_api(text, system_prompt)
 
 # ==========================================
@@ -172,7 +178,6 @@ def main():
     st.title("📢 외교부 소식 자동 요약 봇")
     st.info("최신 외교 동향을 AI를 통해 빠르게 파악하고 전문을 확인하세요.")
     
-    # 세션 상태에 요약과 전문을 함께 저장하도록 구조 변경
     if 'news_data' not in st.session_state:
         st.session_state.news_data = {}
 
@@ -203,7 +208,6 @@ def main():
                         content = get_full_content(item['link'])
                         if content:
                             summary = summarize_text(content)
-                            # 요약과 전문을 함께 저장
                             st.session_state.news_data[item['link']] = {
                                 "summary": summary,
                                 "full_text": content
@@ -211,14 +215,12 @@ def main():
                         else:
                             st.error("본문을 가져오는 데 실패했습니다.")
                 
-                # 데이터가 존재하면 출력
                 if item['link'] in st.session_state.news_data:
                     data = st.session_state.news_data[item['link']]
                     
                     st.markdown("#### 🤖 AI 핵심 요약")
                     st.markdown(f'<div class="summary-box">{data["summary"]}</div>', unsafe_allow_html=True)
                     
-                    # 전문 보기 섹션 (Expander 사용)
                     with st.expander("📄 기사 전문 읽기", expanded=False):
                         st.markdown(f'<div class="content-box">{data["full_text"]}</div>', unsafe_allow_html=True)
                         st.caption(f"[원문 링크로 이동하기]({item['link']})")
